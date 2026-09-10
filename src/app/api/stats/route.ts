@@ -88,6 +88,28 @@ export async function GET() {
     ).length,
   };
 
+  const nowStr = new Date().toISOString().slice(0, 19).replace("T", " ");
+  const dueForecast: { date: string; label: string; count: number }[] = [];
+  for (let d = 0; d < 7; d++) {
+    const day = new Date(Date.now() + d * 86_400_000);
+    const dayStr = day.toISOString().slice(0, 10);
+    const count = cards.filter((c) => {
+      if (!c.due_at) return d === 0;
+      if (c.due_at <= nowStr) return d === 0;
+      return c.due_at.slice(0, 10) === dayStr;
+    }).length;
+    dueForecast.push({
+      date: dayStr,
+      label:
+        d === 0
+          ? "Today"
+          : d === 1
+            ? "Tomorrow"
+            : day.toLocaleDateString(undefined, { weekday: "short" }),
+      count,
+    });
+  }
+
   const scorePoints: ScorePoint[] = [...attempts]
     .reverse()
     .slice(-14)
@@ -157,6 +179,7 @@ export async function GET() {
   return NextResponse.json({
     overview,
     scorePoints,
+    dueForecast,
     progress: progress.sort(
       (a, b) => b.attempts + b.cardsTotal - (a.attempts + a.cardsTotal)
     ),

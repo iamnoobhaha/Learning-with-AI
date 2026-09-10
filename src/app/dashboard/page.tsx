@@ -14,6 +14,7 @@ interface StatsPayload {
   scorePoints: ScorePoint[];
   progress: DocProgress[];
   activity: ActivityItem[];
+  dueForecast: { date: string; label: string; count: number }[];
 }
 
 function scoreColor(s: number): string {
@@ -49,7 +50,7 @@ export default function DashboardPage() {
     );
   }
 
-  const { overview, scorePoints, progress, activity } = data;
+  const { overview, scorePoints, progress, activity, dueForecast } = data;
 
   const cards = [
     {
@@ -108,6 +109,43 @@ export default function DashboardPage() {
           </div>
         ))}
       </section>
+
+      {dueForecast.some((d) => d.count > 0) && (
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-6">
+          <h2 className="font-semibold">Review forecast</h2>
+          <p className="mt-1 text-xs text-zinc-500">
+            Flashcards scheduled to come due over the next week. Stay ahead — review them on time
+            and intervals grow.
+          </p>
+          <div className="mt-5 flex h-32 items-end gap-2">
+            {dueForecast.map((d) => {
+              const max = Math.max(...dueForecast.map((x) => x.count), 1);
+              return (
+                <div key={d.date} className="group relative flex h-full flex-1 flex-col items-center justify-end">
+                  <span className="mb-1 text-xs font-semibold tabular-nums text-indigo-300">
+                    {d.count}
+                  </span>
+                  <div
+                    className={`w-full rounded-t-md transition-all group-hover:brightness-125 ${
+                      d.label === "Today"
+                        ? "bg-emerald-500"
+                        : d.count > 0
+                          ? "bg-indigo-600/80"
+                          : "bg-zinc-800"
+                    }`}
+                    style={{ height: `${Math.max(4, (d.count / max) * 100)}%` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex justify-between text-[10px] uppercase tracking-wide text-zinc-600">
+            {dueForecast.map((d) => (
+              <span key={d.date} className="flex-1 text-center">{d.label}</span>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-6">
         <h2 className="font-semibold">Recent quiz scores</h2>

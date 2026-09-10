@@ -74,7 +74,7 @@ export async function POST(req: Request) {
     const count = Math.min(Math.max(body.count ?? 12, 3), 30);
     const raw = await aiComplete(
       flashcardMessages({ title: sourceTitle, context, count }),
-      { temperature: 0.5, maxTokens: 3000 }
+      { temperature: 0.5, maxTokens: 4000 }
     );
     const parsed = extractJson<{ cards?: { front?: string; back?: string }[] }>(raw);
     const cards = (parsed.cards ?? []).filter((c) => c.front && c.back);

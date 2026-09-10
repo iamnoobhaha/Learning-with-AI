@@ -11,6 +11,36 @@ interface AiOpts {
 const BASE_URL = process.env.NVIDIA_NIM_BASE_URL || "https://integrate.api.nvidia.com/v1";
 const MODEL = process.env.NVIDIA_NIM_MODEL || "meta/llama-3.3-70b-instruct";
 
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 1500;
+
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      if (!RETRYABLE_STATUS.has(res.status)) {
+        const text = await res.text();
+        throw new Error(`NVIDIA NIM error ${res.status}: ${text.slice(0, 400)}`);
+      }
+      lastError = new Error(
+        `NVIDIA NIM error ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS})`
+      );
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("NVIDIA NIM error") && !RETRYABLE_STATUS.has(Number(err.message.match(/\d+/)?.[0]))) {
+        throw err;
+      }
+      lastError = err;
+    }
+    if (attempt < MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * attempt));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("NVIDIA NIM request failed");
+}
+
 function headers(): Record<string, string> {
   const key = process.env.NVIDIA_NIM_API_KEY;
   if (!key) {
@@ -35,15 +65,11 @@ function body(messages: AiMessage[], opts: AiOpts, stream: boolean): string {
 }
 
 export async function aiComplete(messages: AiMessage[], opts: AiOpts = {}): Promise<string> {
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: headers(),
     body: body(messages, opts, false),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`NVIDIA NIM error ${res.status}: ${text.slice(0, 400)}`);
-  }
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
   };
@@ -51,14 +77,13 @@ export async function aiComplete(messages: AiMessage[], opts: AiOpts = {}): Prom
 }
 
 export async function* aiStream(messages: AiMessage[], opts: AiOpts = {}): AsyncGenerator<string> {
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+  const res = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: { ...headers(), Accept: "text/event-stream" },
     body: body(messages, opts, true),
   });
-  if (!res.ok || !res.body) {
-    const text = res.body ? await res.text() : res.statusText;
-    throw new Error(`NVIDIA NIM error ${res.status}: ${text.slice(0, 400)}`);
+  if (!res.body) {
+    throw new Error(`NVIDIA NIM error ${res.status}: empty stream body`);
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

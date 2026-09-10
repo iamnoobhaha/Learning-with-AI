@@ -107,7 +107,10 @@ export default function FlashcardsPanel({
   }, [allCards]);
 
   const dueCards = useMemo(
-    () => allCards.filter((c) => isDue(c.due_at ?? "")),
+    () =>
+      allCards
+        .filter((c) => isDue(c.due_at ?? ""))
+        .sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? "")),
     [allCards]
   );
 

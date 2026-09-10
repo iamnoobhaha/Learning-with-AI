@@ -126,7 +126,7 @@ export async function POST(req: Request) {
 
     const raw = await aiComplete(
       quizMessages({ title: sourceTitle, context, mcqCount, shortCount, difficulty }),
-      { temperature: 0.6, maxTokens: 4000 }
+      { temperature: 0.6, maxTokens: 6000 }
     );
     const parsed = extractJson<{ title?: string; questions: GeneratedQuestion[] }>(raw);
     if (!Array.isArray(parsed.questions)) {
