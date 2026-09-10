@@ -85,18 +85,140 @@ export async function* aiStream(messages: AiMessage[], opts: AiOpts = {}): Async
   }
 }
 
-function findJsonSlice(raw: string): string {
-  let s = raw.trim();
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) s = fence[1].trim();
-  const starts = [s.indexOf("{"), s.indexOf("[")].filter((i) => i >= 0);
-  if (!starts.length) throw new Error("Model returned no JSON");
-  const start = Math.min(...starts);
-  const end = Math.max(s.lastIndexOf("}"), s.lastIndexOf("]"));
-  if (end < start) throw new Error("Model returned truncated JSON");
-  return s.slice(start, end + 1);
+function parseSafely(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+}
+
+function topLevelBlocks(s: string): string[] {
+  const blocks: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"') {
+      i++;
+      while (i < s.length) {
+        if (s[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (s[i] === '"') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (c === "{" || c === "[") {
+      const start = i;
+      const open = c;
+      const close = open === "{" ? "}" : "]";
+      let depth = 0;
+      let inString = false;
+      i = start;
+      while (i < s.length) {
+        const ch = s[i];
+        if (inString) {
+          if (ch === "\\") i++;
+          else if (ch === '"') inString = false;
+        } else {
+          if (ch === '"') inString = true;
+          else if (ch === open) depth++;
+          else if (ch === close && --depth === 0) {
+            blocks.push(s.slice(start, i + 1));
+            i++;
+            break;
+          }
+        }
+        i++;
+      }
+      if (depth !== 0) {
+        blocks.push(s.slice(start));
+        break;
+      }
+      continue;
+    }
+    i++;
+  }
+  return blocks;
+}
+
+function repairTruncated(block: string): unknown {
+  if (!block.length) return undefined;
+  let out = block;
+
+  // drop any trailing unclosed string (restores the opening quote as cut point)
+  let inString = false;
+  let quoteStart = -1;
+  let i = 0;
+  while (i < out.length) {
+    const ch = out[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') {
+        inString = false;
+        quoteStart = -1;
+      }
+    } else if (ch === '"') {
+      inString = true;
+      quoteStart = i;
+    }
+    i++;
+  }
+  if (inString && quoteStart >= 0) {
+    out = out.slice(0, quoteStart);
+    const tail = out.trimEnd();
+    const last = tail[tail.length - 1];
+    if (last === ",") {
+      out = out.slice(0, out.lastIndexOf(",")).trimEnd() + " null";
+    } else if (last === ":") {
+      out = out + " null";
+    }
+  }
+
+  out = out.replace(/,\s*$/, "");
+  if (/:\s*$/.test(out)) out = out.trimEnd() + " null";
+
+  // close any unclosed brackets
+  const stack: string[] = [];
+  inString = false;
+  for (let j = 0; j < out.length; j++) {
+    const ch = out[j];
+    if (inString) {
+      if (ch === "\\") j++;
+      else if (ch === '"') inString = false;
+    } else {
+      if (ch === '"') inString = true;
+      else if (ch === "{" || ch === "[") stack.push(ch);
+      else if (ch === "}" || ch === "]") stack.pop();
+    }
+  }
+  for (let k = stack.length - 1; k >= 0; k--) {
+    out += stack[k] === "{" ? "}" : "]";
+  }
+  return parseSafely(out);
 }
 
 export function extractJson<T>(raw: string): T {
-  return JSON.parse(findJsonSlice(raw)) as T;
+  let s = raw.trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+
+  const direct = parseSafely(s);
+  if (direct !== undefined) return direct as T;
+
+  const blocks = topLevelBlocks(s);
+  for (const block of blocks) {
+    const parsed = parseSafely(block);
+    if (parsed !== undefined) return parsed as T;
+  }
+  for (const block of blocks) {
+    const repaired = repairTruncated(block);
+    if (repaired !== undefined) return repaired as T;
+  }
+  throw new Error("Model returned malformed JSON — please try again.");
 }

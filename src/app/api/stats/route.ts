@@ -46,8 +46,14 @@ export async function GET() {
     .all() as { id: number; score_pct: number; created_at: string; quiz_title: string; document_id: string }[];
 
   const cards = db
-    .prepare("SELECT document_id, box, updated_at FROM flashcards")
-    .all() as { document_id: string; box: number; updated_at: string }[];
+    .prepare("SELECT document_id, box, updated_at, due_at, interval FROM flashcards")
+    .all() as {
+    document_id: string;
+    box: number;
+    updated_at: string;
+    due_at: string | null;
+    interval: number;
+  }[];
 
   const chats = db
     .prepare("SELECT document_id, created_at FROM chat_messages")
@@ -77,6 +83,9 @@ export async function GET() {
     bestScore: scores.length ? Math.max(...scores) : null,
     flashcardsTotal: cards.length,
     flashcardsMastered: cards.filter((c) => c.box >= 3).length,
+    flashcardsDue: cards.filter(
+      (c) => !c.due_at || c.due_at <= new Date().toISOString().slice(0, 19).replace("T", " ")
+    ).length,
   };
 
   const scorePoints: ScorePoint[] = [...attempts]

@@ -67,12 +67,15 @@ export default function DashboardPage() {
           : "Take your first quiz",
     },
     {
-      label: "Flashcards mastered",
-      value: `${overview.flashcardsMastered}/${overview.flashcardsTotal}`,
+      label: "Flashcard reviews due",
+      value: String(overview.flashcardsDue),
       sub:
-        overview.flashcardsTotal > 0
-          ? `${Math.round((overview.flashcardsMastered / overview.flashcardsTotal) * 100)}% of your deck`
-          : "Generate cards from any notes doc",
+        overview.flashcardsDue > 0
+          ? `${overview.flashcardsMastered}/${overview.flashcardsTotal} mastered overall`
+          : overview.flashcardsTotal > 0
+            ? "Nothing due — you're up to date"
+            : "Generate cards from any notes doc",
+      accent: overview.flashcardsDue > 0,
     },
     {
       label: "Library",

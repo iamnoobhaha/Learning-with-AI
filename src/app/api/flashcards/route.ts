@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
 import { evenContext, evenLibraryContext, docIdsInLibrary } from "@/lib/context";
 import { flashcardMessages } from "@/lib/prompts";
@@ -15,15 +16,17 @@ export async function GET(req: Request) {
   if (!documentId && !libraryId) {
     return NextResponse.json({ error: "documentId or libraryId required" }, { status: 400 });
   }
+  const fields =
+    "id, front, back, box, created_at, deck_id, due_at, interval, ease, reps, lapses";
   const rows = documentId
     ? db
         .prepare(
-          "SELECT id, front, back, box FROM flashcards WHERE document_id = ? ORDER BY box ASC, updated_at ASC LIMIT 200"
+          `SELECT ${fields} FROM flashcards WHERE document_id = ? ORDER BY created_at DESC LIMIT 200`
         )
         .all(documentId)
     : db
         .prepare(
-          "SELECT id, front, back, box FROM flashcards WHERE library_id = ? ORDER BY box ASC, updated_at ASC LIMIT 200"
+          `SELECT ${fields} FROM flashcards WHERE library_id = ? ORDER BY created_at DESC LIMIT 200`
         )
         .all(libraryId);
   return NextResponse.json({ cards: rows });
@@ -78,10 +81,13 @@ export async function POST(req: Request) {
     if (!cards.length) throw new Error("Model returned no cards");
 
     const ins = db.prepare(
-      "INSERT INTO flashcards (document_id, library_id, front, back) VALUES (?, ?, ?, ?)"
+      "INSERT INTO flashcards (document_id, library_id, front, back, deck_id, created_at, due_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))"
     );
+    const deckId = randomUUID();
     db.transaction(() =>
-      cards.forEach((c) => ins.run(body.documentId ?? null, body.libraryId ?? null, c.front, c.back))
+      cards.forEach((c) =>
+        ins.run(body.documentId ?? null, body.libraryId ?? null, c.front, c.back, deckId)
+      )
     )();
 
     const where = body.documentId
@@ -90,7 +96,7 @@ export async function POST(req: Request) {
     const all = db
       .prepare(`SELECT COUNT(*) AS n FROM flashcards WHERE ${where}`)
       .get(body.documentId ?? body.libraryId) as { n: number };
-    return NextResponse.json({ added: cards.length, total: Number(all.n) });
+    return NextResponse.json({ added: cards.length, total: Number(all.n), deckId });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";
     return NextResponse.json({ error: message }, { status: 500 });

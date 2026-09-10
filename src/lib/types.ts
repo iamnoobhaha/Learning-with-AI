@@ -72,6 +72,13 @@ export interface FlashcardView {
   front: string;
   back: string;
   box: number;
+  created_at: string;
+  deck_id: string;
+  due_at: string | null;
+  interval: number;
+  ease: number;
+  reps: number;
+  lapses: number;
 }
 
 export interface MockExamContent {
@@ -112,6 +119,7 @@ export interface StatsOverview {
   bestScore: number | null;
   flashcardsTotal: number;
   flashcardsMastered: number;
+  flashcardsDue: number;
 }
 
 export interface ScorePoint {

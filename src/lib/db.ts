@@ -72,7 +72,14 @@ CREATE TABLE IF NOT EXISTS flashcards (
   front TEXT NOT NULL,
   back TEXT NOT NULL,
   box INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  deck_id TEXT,
+  due_at TEXT,
+  interval INTEGER NOT NULL DEFAULT 0,
+  ease REAL NOT NULL DEFAULT 2.5,
+  reps INTEGER NOT NULL DEFAULT 0,
+  lapses INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS exams (
   id TEXT PRIMARY KEY,
@@ -152,13 +159,47 @@ migrateScopedTable("flashcards", () => `
     back TEXT NOT NULL,
     box INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deck_id TEXT,
+    due_at TEXT,
+    interval INTEGER NOT NULL DEFAULT 0,
+    ease REAL NOT NULL DEFAULT 2.5,
+    reps INTEGER NOT NULL DEFAULT 0,
+    lapses INTEGER NOT NULL DEFAULT 0,
     CHECK ((document_id IS NULL) <> (library_id IS NULL))
   );
-  INSERT INTO flashcards_new (id, document_id, library_id, front, back, box, updated_at)
-    SELECT id, document_id, NULL, front, back, box, updated_at FROM flashcards;
+  INSERT INTO flashcards_new (id, document_id, library_id, front, back, box, updated_at, created_at, deck_id)
+    SELECT id, document_id, NULL, front, back, box, updated_at, created_at, deck_id FROM flashcards;
   DROP TABLE flashcards;
   ALTER TABLE flashcards_new RENAME TO flashcards;
 `);
+
+if (!columnsOf("flashcards").has("created_at")) {
+  db.exec("ALTER TABLE flashcards ADD COLUMN created_at TEXT");
+  db.exec("UPDATE flashcards SET created_at = datetime('now') WHERE created_at IS NULL");
+}
+if (!columnsOf("flashcards").has("deck_id")) {
+  db.exec("ALTER TABLE flashcards ADD COLUMN deck_id TEXT");
+  db.exec(
+    "UPDATE flashcards SET deck_id = 'legacy-' || substr(created_at, 1, 10) WHERE deck_id IS NULL"
+  );
+}
+db.exec("UPDATE flashcards SET created_at = datetime('now') WHERE created_at IS NULL");
+db.exec("CREATE INDEX IF NOT EXISTS idx_flashcards_deck ON flashcards(deck_id)");
+
+if (!columnsOf("flashcards").has("interval")) {
+  db.exec("ALTER TABLE flashcards ADD COLUMN interval INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE flashcards ADD COLUMN ease REAL NOT NULL DEFAULT 2.5");
+  db.exec("ALTER TABLE flashcards ADD COLUMN reps INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE flashcards ADD COLUMN lapses INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE flashcards ADD COLUMN due_at TEXT");
+  db.exec(
+    "UPDATE flashcards SET interval = CASE box WHEN 5 THEN 60 WHEN 4 THEN 21 WHEN 3 THEN 7 WHEN 2 THEN 3 WHEN 1 THEN 1 ELSE 0 END"
+  );
+  db.exec(
+    "UPDATE flashcards SET due_at = CASE WHEN interval > 0 THEN datetime('now', '+' || interval || ' days') ELSE datetime('now') END WHERE due_at IS NULL"
+  );
+}
 
 export interface DocumentRow {
   id: string;
