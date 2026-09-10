@@ -63,14 +63,14 @@ export default function QuizPanel({
     }
   }
 
-  async function generate() {
+  async function generate(weak = false) {
     setStage("generating");
     setError("");
     try {
       const res = await fetch("/api/quiz", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId, libraryId, count, difficulty, mcqRatio }),
+        body: JSON.stringify({ documentId, libraryId, count, difficulty, mcqRatio, weak }),
       });
       const data = (await res.json()) as { quizId?: string; error?: string };
       if (!res.ok || !data.quizId) throw new Error(data.error || "Generation failed");
@@ -219,13 +219,24 @@ export default function QuizPanel({
               <span className="mt-1 block text-xs text-zinc-600">Split is enforced exactly.</span>
             </label>
           </div>
-          <button
-            onClick={generate}
-            disabled={stage === "generating"}
-            className="mt-5 rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-medium transition hover:bg-indigo-500 disabled:opacity-50"
-          >
-            {stage === "generating" ? "Writing your quiz…" : "Generate quiz"}
-          </button>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => generate(false)}
+              disabled={stage === "generating"}
+              className="rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-medium transition hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {stage === "generating" ? "Writing your quiz…" : "Generate quiz"}
+            </button>
+            {taken > 0 && (
+              <button
+                onClick={() => generate(true)}
+                disabled={stage === "generating"}
+                className="rounded-xl border border-emerald-700 bg-emerald-950/40 px-6 py-2.5 text-sm font-medium text-emerald-200 transition hover:bg-emerald-900/60 disabled:opacity-50"
+              >
+                Practice weak spots
+              </button>
+            )}
+          </div>
           {error && (
             <p className="mt-3 rounded-lg bg-red-950/60 px-3 py-2 text-sm text-red-300">{error}</p>
           )}

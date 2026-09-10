@@ -83,6 +83,7 @@ export async function POST(req: Request) {
       count?: number;
       mcqRatio?: number;
       difficulty?: string;
+      weak?: boolean;
     };
     if (!body.documentId && !body.libraryId) {
       return NextResponse.json(
@@ -124,8 +125,66 @@ export async function POST(req: Request) {
     const mcqCount = Math.round(count * mcqRatio);
     const shortCount = count - mcqCount;
 
+    // targeted practice: mine recent attempts for missed questions
+    let focus = "";
+    if (body.weak) {
+      const where = body.documentId ? "q.document_id = ?" : "q.library_id = ?";
+      const scopeVal = body.documentId ?? body.libraryId;
+      const attempts = db
+        .prepare(
+          `SELECT a.details FROM attempts a
+           JOIN quizzes q ON q.id = a.quiz_id
+           WHERE ${where} ORDER BY a.id DESC LIMIT 12`
+        )
+        .all(scopeVal) as { details: string }[];
+      const missedQids: number[] = [];
+      for (const a of attempts) {
+        try {
+          const dets = JSON.parse(a.details) as {
+            questionId?: number;
+            score?: number;
+            correct?: boolean | null;
+          }[];
+          for (const d of dets) {
+            const failed = d.correct === false || (d.score ?? 1) < 1;
+            if (failed && d.questionId) missedQids.push(Number(d.questionId));
+          }
+        } catch {
+          // ignore malformed stored details
+        }
+      }
+      const unique = [...new Set(missedQids)].slice(0, 12);
+      if (unique.length) {
+        const qs = db
+          .prepare(
+            `SELECT id, prompt, answer, explanation FROM questions WHERE id IN (${unique.map(() => "?").join(",")})`
+          )
+          .all(...unique) as {
+          id: number;
+          prompt: string;
+          answer: string;
+          explanation: string;
+        }[];
+        const byId = new Map(qs.map((q) => [q.id, q]));
+        focus = unique
+          .map((qid, i) => {
+            const q = byId.get(qid);
+            if (!q) return "";
+            return `${i + 1}. Prompt: ${q.prompt.slice(0, 220)}\n   Correct answer: ${q.answer.slice(0, 160)}`;
+          })
+          .filter(Boolean)
+          .join("\n");
+      }
+      if (!focus) {
+        return NextResponse.json(
+          { error: "No weak spots found — you've answered everything correctly. Keep it up!" },
+          { status: 400 }
+        );
+      }
+    }
+
     const raw = await aiComplete(
-      quizMessages({ title: sourceTitle, context, mcqCount, shortCount, difficulty }),
+      quizMessages({ title: sourceTitle, context, mcqCount, shortCount, difficulty, focus: focus || undefined }),
       { temperature: 0.6, maxTokens: 6000 }
     );
     const parsed = extractJson<{ title?: string; questions: GeneratedQuestion[] }>(raw);
@@ -206,7 +265,9 @@ export async function POST(req: Request) {
         quizId,
         body.documentId ?? null,
         body.libraryId ?? null,
-        parsed.title?.slice(0, 200) || `${sourceTitle} quiz`,
+        body.weak
+          ? `Weak-spot practice — ${sourceTitle}`
+          : parsed.title?.slice(0, 200) || `${sourceTitle} quiz`,
         difficulty
       );
       ordered.forEach((q, i) => {

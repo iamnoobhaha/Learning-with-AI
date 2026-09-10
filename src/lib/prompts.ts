@@ -35,6 +35,7 @@ export function quizMessages(opts: {
   mcqCount: number;
   shortCount: number;
   difficulty: string;
+  focus?: string;
 }): AiMessage[] {
   const rubric =
     opts.difficulty === "easy"
@@ -47,6 +48,11 @@ export function quizMessages(opts: {
     content:
       "You are an expert exam writer. Create original assessment questions strictly based on the provided course notes.\n" +
       `DIFFICULTY TARGET — ${opts.difficulty}: ${rubric}\n` +
+      (opts.focus
+        ? "TARGETED PRACTICE MODE: the student recently got these wrong. Generate NEW questions that test these EXACT concepts (reworded — never repeat the same question):\n" +
+          opts.focus +
+          "\n"
+        : "") +
       "MCQ RULES:\n" +
       "- Exactly 4 options each, similar in length and style.\n" +
       "- No letter prefixes on options. Never use \"All/None of the above\" or options that combine other options.\n" +
