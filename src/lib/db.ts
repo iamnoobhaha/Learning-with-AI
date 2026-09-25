@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
-  text TEXT NOT NULL
+  text TEXT NOT NULL,
+  block_index INTEGER NOT NULL DEFAULT 0,
+  included INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(document_id);
 CREATE TABLE IF NOT EXISTS chat_messages (
@@ -200,6 +202,15 @@ if (!columnsOf("flashcards").has("interval")) {
     "UPDATE flashcards SET due_at = CASE WHEN interval > 0 THEN datetime('now', '+' || interval || ' days') ELSE datetime('now') END WHERE due_at IS NULL"
   );
 }
+
+if (!columnsOf("chunks").has("block_index")) {
+  db.exec("ALTER TABLE chunks ADD COLUMN block_index INTEGER NOT NULL DEFAULT 0");
+  db.exec("UPDATE chunks SET block_index = idx WHERE block_index = 0 AND idx != 0");
+}
+if (!columnsOf("chunks").has("included")) {
+  db.exec("ALTER TABLE chunks ADD COLUMN included INTEGER NOT NULL DEFAULT 1");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_chunks_block ON chunks(document_id, block_index)");
 
 export interface DocumentRow {
   id: string;

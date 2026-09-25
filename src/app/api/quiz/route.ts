@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
-import { evenContext, evenLibraryContext, docIdsInLibrary } from "@/lib/context";
+import { evenContext, evenLibraryContext, docIdsInLibrary, includedContentChars } from "@/lib/context";
 import { quizMessages } from "@/lib/prompts";
 import { aiComplete, extractJson } from "@/lib/ai";
+import { dedupeAgainst } from "@/lib/dedup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +17,19 @@ interface GeneratedQuestion {
   answer_index?: number;
   answer?: string;
   explanation?: string;
+}
+
+function shuffleMcqOptions(options: string[], answerIndex: number) {
+  const correct = options[answerIndex];
+  const shuffled = options.map((option, index) => ({ option, index }));
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return {
+    options: shuffled.map((x) => x.option),
+    answerIndex: shuffled.findIndex((x) => x.option === correct && x.index === answerIndex),
+  };
 }
 
 export async function GET(req: Request) {
@@ -100,6 +114,12 @@ export async function POST(req: Request) {
         .get(body.documentId) as { id: string; title: string } | undefined;
       if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
       sourceTitle = doc.title;
+      if (includedContentChars([doc.id]) < 200) {
+        return NextResponse.json(
+          { error: "All content in this document is excluded. Include at least one section first." },
+          { status: 400 }
+        );
+      }
       context = evenContext(doc.id, 30000);
     } else {
       const lib = db
@@ -114,6 +134,12 @@ export async function POST(req: Request) {
         );
       }
       sourceTitle = `${lib.name} (${docIds.length} documents)`;
+      if (includedContentChars(docIds) < 200) {
+        return NextResponse.json(
+          { error: "All content in this library is excluded. Include at least one section first." },
+          { status: 400 }
+        );
+      }
       context = evenLibraryContext(lib.id, 34000);
     }
 
@@ -124,6 +150,26 @@ export async function POST(req: Request) {
       : "medium";
     const mcqCount = Math.round(count * mcqRatio);
     const shortCount = count - mcqCount;
+
+    // ask for a few extra so duplicates can be discarded without returning short
+    const surplus = 3;
+    const askMcq = mcqCount + Math.min(surplus, Math.ceil(count * 0.25));
+    const askShort = shortCount + Math.min(surplus, Math.ceil(count * 0.25));
+
+    // prior questions for this scope: prompt avoidance + hard dedup
+    const priorWhere = body.documentId ? "q.document_id = ?" : "q.library_id = ?";
+    const priorRows = db
+      .prepare(
+        `SELECT qu.prompt FROM questions qu
+         JOIN quizzes q ON q.id = qu.quiz_id
+         WHERE ${priorWhere} ORDER BY qu.id DESC LIMIT 300`
+      )
+      .all(body.documentId ?? body.libraryId) as { prompt: string }[];
+    const priorPrompts = priorRows.map((r) => r.prompt);
+    const avoidList = priorPrompts
+      .slice(0, 60)
+      .map((p) => `- ${p.replace(/\s+/g, " ").slice(0, 120)}`)
+      .join("\n");
 
     // targeted practice: mine recent attempts for missed questions
     let focus = "";
@@ -184,7 +230,15 @@ export async function POST(req: Request) {
     }
 
     const raw = await aiComplete(
-      quizMessages({ title: sourceTitle, context, mcqCount, shortCount, difficulty, focus: focus || undefined }),
+      quizMessages({
+        title: sourceTitle,
+        context,
+        mcqCount: askMcq,
+        shortCount: askShort,
+        difficulty,
+        focus: focus || undefined,
+        avoid: avoidList || undefined,
+      }),
       { temperature: 0.6, maxTokens: 6000 }
     );
     const parsed = extractJson<{ title?: string; questions: GeneratedQuestion[] }>(raw);
@@ -214,7 +268,7 @@ export async function POST(req: Request) {
         if (opts.length > 4) opts = opts.slice(0, 4);
         const idx = Number(q.answer_index);
         if (!Number.isInteger(idx) || idx < 0 || idx >= opts.length) continue;
-        validMcqs.push({ prompt, options: opts, answerIndex: idx, explanation });
+        validMcqs.push({ prompt, ...shuffleMcqOptions(opts, idx), explanation });
       } else {
         const answer = String(q.answer ?? "").trim();
         if (!answer) continue;
@@ -225,19 +279,21 @@ export async function POST(req: Request) {
       throw new Error("Model returned no usable questions — please try again");
     }
 
+    // drop anything the student has already been asked (exact or near-duplicate)
+    const mcqDedup = dedupeAgainst(validMcqs, (q) => q.prompt, priorPrompts, 0.72);
+    const shortDedup = dedupeAgainst(validShorts, (q) => q.prompt, priorPrompts, 0.72);
+    let candidates = [...mcqDedup.fresh, ...shortDedup.fresh];
+    const duplicatesRemoved = mcqDedup.duplicatesRemoved + shortDedup.duplicatesRemoved;
+
     // enforce the requested mcq/short split; cross-fill from the surplus type on shortfall
-    let pickedMcq = validMcqs.slice(0, mcqCount);
-    let pickedShort = validShorts.slice(0, shortCount);
+    let pickedMcq = candidates.filter((q) => "answerIndex" in q).slice(0, mcqCount) as typeof validMcqs;
+    let pickedShort = candidates.filter((q) => "answer" in q).slice(0, shortCount) as typeof validShorts;
     if (pickedMcq.length < mcqCount) {
-      pickedShort = pickedShort.slice(
-        0,
-        Math.min(pickedShort.length, count - pickedMcq.length)
-      );
+      const extra = candidates.filter((q) => "answer" in q) as typeof validShorts;
+      pickedShort = extra.slice(0, Math.min(extra.length, count - pickedMcq.length));
     } else if (pickedShort.length < shortCount) {
-      pickedMcq = pickedMcq.slice(
-        0,
-        Math.min(pickedMcq.length, count - pickedShort.length)
-      );
+      const extra = candidates.filter((q) => "answerIndex" in q) as typeof validMcqs;
+      pickedMcq = extra.slice(0, Math.min(extra.length, count - pickedShort.length));
     }
 
     // interleave types so they appear mixed
@@ -289,6 +345,7 @@ export async function POST(req: Request) {
       questionCount: ordered.length,
       mcqCount: pickedMcq.length,
       shortCount: pickedShort.length,
+      duplicatesRemoved,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";

@@ -36,6 +36,7 @@ export function quizMessages(opts: {
   shortCount: number;
   difficulty: string;
   focus?: string;
+  avoid?: string;
 }): AiMessage[] {
   const rubric =
     opts.difficulty === "easy"
@@ -59,6 +60,14 @@ export function quizMessages(opts: {
       "- Distractors must be incorrect but believable; only ONE option may be defensibly correct.\n" +
       "- answer_index is the 0-based index of the single correct option.\n" +
       "- Short-answer prompts must be answerable in 1-3 sentences using the notes.\n" +
+      "CONTENT RULES:\n" +
+      "- Only ask about examinable subject matter: concepts, definitions, processes, formulas, comparisons, applications.\n" +
+      "- NEVER ask about logistics or admin details (lecture dates/times/numbers, deadlines, submissions, attendance, staff names, room numbers, links, copyright lines).\n" +
+      (opts.avoid
+        ? "These questions were already asked for this material. Write DIFFERENT questions testing other facts and angles — never repeat or paraphrase them:\n" +
+          opts.avoid +
+          "\n"
+        : "") +
       'Respond with ONLY valid JSON, no markdown fences and no extra text. Schema:\n' +
       '{"title":string,"questions":[{"type":"mcq","prompt":string,"options":[string,string,string,string],"answer_index":0-3,"explanation":string} | {"type":"short","prompt":string,"answer":string,"explanation":string}]}' +
       `\nCOUNTS ARE STRICT: return EXACTLY ${opts.mcqCount} object(s) with type "mcq"${
@@ -103,11 +112,18 @@ export function flashcardMessages(opts: {
   title: string;
   context: string;
   count: number;
+  avoid?: string;
 }): AiMessage[] {
   const system: AiMessage = {
     role: "system",
     content:
       "You create high-quality spaced-repetition flashcards from study material. Each card tests ONE atomic idea; mix recall, definition and application prompts. " +
+      "Only make cards about examinable subject matter — never about logistics (dates, times, lecture numbers, staff names, deadlines, room numbers, links). " +
+      (opts.avoid
+        ? "These cards already exist for this material. Create DIFFERENT cards covering other facts and angles — never repeat or paraphrase them:\n" +
+          opts.avoid +
+          "\n"
+        : "") +
       'Front must be a question or cue (max 25 words); back a crisp answer (max 60 words). Respond with ONLY valid JSON:\n' +
       '{"cards":[{"front":string,"back":string}]}',
   };

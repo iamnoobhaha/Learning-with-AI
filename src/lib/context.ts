@@ -33,6 +33,78 @@ export function chunkText(text: string, size = 1200, overlap = 150): string[] {
   return out;
 }
 
+const JUNK_PATTERNS = [
+  /\b(lecture|class|tutorial|session|workshop|lab)\s*(#|no\.?|number)?\s*\d+\b/i,
+  /\bstarts?\s+(at|on)\b/i,
+  /\bweek\s*\d+\b/i,
+  /\b\d{1,2}[:.]\d{2}\s*(am|pm)?\s*[-–—to]+\s*\d{1,2}[:.]\d{2}\b/i,
+  /\b(mon|tue|wed|thu|fri|sat|sun)(day|s|nes|rs|ur|day)?\b.{0,24}\b\d{1,2}[:.]\d{2}\b/i,
+  /\b(due|deadline|submission|submit|resubmit|upload)\b.{0,30}\b(date|by|on|before)\b/i,
+  /\b(office hours?|consultation|drop[- ]?in|seminar)\b/i,
+  /\b(attendance|participation)\b.{0,30}\b(marks?|grades?|grading|credit|weight)\b/i,
+  /\b(exam|quiz|test|assessment)\b.{0,24}\b(date|schedule|on|sitting)\b/i,
+  /\b(instructor|lecturer|professor|tutor|coordinator)\b\s*[:\-–]/i,
+  /\b(course code|module code|student id|roll no|matric)\b/i,
+  /\b(announcement|notice|reminder|important|please note)\b\s*[:\-–]/i,
+  /\b(course portal|blackboard|canvas|moodle|classroom|turnitin|zoom)\b/i,
+  /\b(slides?|notes|recordings?)\b.{0,24}\b(will be|are|is)\b.{0,16}\b(posted|uploaded|available)\b/i,
+  /\b(read|refer to)\s+(chapter|section|slide|page)s?\s+\d+/i,
+  /^\s*[-–—•*]?\s*(page\s+)?\d+\s*(of\s+\d+)?\s*$/i,
+  /^https?:\/\/\S+$/i,
+  /copyright|all rights reserved|©/i,
+];
+
+export function isLowValueBlock(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (t.length > 1200) return false;
+  const lines = t.split("\n").map((l) => l.trim()).filter(Boolean);
+  const admin = lines.filter((l) => JUNK_PATTERNS.some((p) => p.test(l)));
+  if (!admin.length) return false;
+  const substantive = lines
+    .filter((l) => !JUNK_PATTERNS.some((p) => p.test(l)))
+    .join(" ")
+    .trim();
+  return substantive.length < 260;
+}
+
+/**
+ * Removes admin/logistics lines from a mixed block so the AI never sees them,
+ * while preserving the actual study content in the same section.
+ */
+export function stripJunkLines(text: string): string {
+  const lines = text.split("\n");
+  const kept = lines.filter((line, i) => {
+    const t = line.trim();
+    if (!t) return true;
+    return !JUNK_PATTERNS.some((p) => p.test(t));
+  });
+  if (kept.length === lines.length) return text;
+  const stripped = kept.join("\n").trim();
+  if (!stripped || stripped.length < 40) return "";
+  // only strip when real content survives
+  return stripped;
+}
+
+export interface BlockChunk {
+  text: string;
+  blockIndex: number;
+}
+
+export function chunkBlocks(
+  blocks: { text: string }[],
+  size = 1200,
+  overlap = 150
+): BlockChunk[] {
+  const out: BlockChunk[] = [];
+  blocks.forEach((block, blockIndex) => {
+    for (const piece of chunkText(block.text, size, overlap)) {
+      out.push({ text: piece, blockIndex });
+    }
+  });
+  return out;
+}
+
 function tokenize(s: string): string[] {
   return (s.toLowerCase().match(/[a-z][a-z0-9'-]*/g) ?? []).filter(
     (w) => w.length > 2 && !STOP.has(w)
@@ -52,6 +124,28 @@ export function docIdsInLibrary(libraryId: string): string[] {
   return rows.map((r) => r.id);
 }
 
+export function includedChunkCount(docIds: string[]): number {
+  if (!docIds.length) return 0;
+  const placeholders = docIds.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM chunks WHERE document_id IN (${placeholders}) AND included = 1`
+    )
+    .get(...docIds) as { n: number };
+  return Number(row.n);
+}
+
+export function includedContentChars(docIds: string[]): number {
+  if (!docIds.length) return 0;
+  const placeholders = docIds.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(LENGTH(text)), 0) AS n FROM chunks WHERE document_id IN (${placeholders}) AND included = 1`
+    )
+    .get(...docIds) as { n: number };
+  return Number(row.n);
+}
+
 function chunksForDocs(docIds: string[]): ChunkRow[] {
   if (!docIds.length) return [];
   const placeholders = docIds.map(() => "?").join(",");
@@ -59,7 +153,8 @@ function chunksForDocs(docIds: string[]): ChunkRow[] {
     .prepare(
       `SELECT c.id, c.idx, c.text, d.id AS doc_id, d.title AS doc_title
        FROM chunks c JOIN documents d ON d.id = c.document_id
-       WHERE c.document_id IN (${placeholders}) ORDER BY d.created_at ASC, d.id ASC, c.idx ASC`
+       WHERE c.document_id IN (${placeholders}) AND c.included = 1
+       ORDER BY d.created_at ASC, d.id ASC, c.idx ASC`
     )
     .all(...docIds) as ChunkRow[];
   return rows;

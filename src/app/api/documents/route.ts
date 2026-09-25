@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
-import { chunkText } from "@/lib/context";
+import { chunkBlocks, isLowValueBlock, stripJunkLines } from "@/lib/context";
 import { findOrCreateLibrary } from "@/lib/libraries";
 import { extractFile, UnsupportedFileTypeError } from "@/lib/extract";
 
@@ -44,11 +44,13 @@ export async function POST(req: Request) {
 
     let text = "";
     let pages: number | null = null;
+    let blocks: { label: string; text: string }[] = [];
     try {
       const buf = Buffer.from(await file.arrayBuffer());
       const result = await extractFile(file.name, file.type, buf);
       text = result.text;
       pages = result.pages;
+      blocks = result.blocks;
     } catch (err) {
       if (err instanceof UnsupportedFileTypeError) {
         return NextResponse.json({ error: err.message }, { status: 415 });
@@ -72,11 +74,52 @@ export async function POST(req: Request) {
       "INSERT INTO documents (id, kind, title, filename, size, pages, content, library_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(id, kind, title, file.name, file.size, pages, text, libraryId);
 
-    const chunks = chunkText(text);
-    const ins = db.prepare("INSERT INTO chunks (document_id, idx, text) VALUES (?, ?, ?)");
-    db.transaction(() => chunks.forEach((t, i) => ins.run(id, i, t)))();
+    if (!blocks.length) blocks = [{ label: "Document", text }];
 
-    return NextResponse.json({ id, libraryId });
+    // drop admin-only sections entirely, and strip logistics lines from mixed ones
+    const MIN_BLOCK_CHARS = 120;
+    const keptBlocks: { label: string; text: string }[] = [];
+    const junkBlocks = new Set<number>();
+    blocks.forEach((b, i) => {
+      if (isLowValueBlock(b.text)) {
+        junkBlocks.add(i);
+        return;
+      }
+      const stripped = stripJunkLines(b.text);
+      if (stripped.trim().length < MIN_BLOCK_CHARS) {
+        junkBlocks.add(i);
+        return;
+      }
+      keptBlocks.push({ label: b.label, text: stripped });
+    });
+    if (!keptBlocks.length) {
+      return NextResponse.json(
+        {
+          error:
+            "No study content found in this file — it appears to contain only a title, schedule or admin details.",
+        },
+        { status: 422 }
+      );
+    }
+
+    const pieces = chunkBlocks(keptBlocks);
+    const ins = db.prepare(
+      "INSERT INTO chunks (document_id, idx, text, block_index, included) VALUES (?, ?, ?, ?, ?)"
+    );
+    db.transaction(() =>
+      pieces.forEach((p, i) => ins.run(id, i, p.text, p.blockIndex, 1))
+    )();
+
+    return NextResponse.json({
+      id,
+      libraryId,
+      blocks: keptBlocks.length,
+      autoExcluded: junkBlocks.size,
+      excludedLabels: [...junkBlocks]
+        .map((i) => blocks[i]?.label)
+        .filter(Boolean)
+        .slice(0, 8),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Upload failed";
     return NextResponse.json({ error: message }, { status: 500 });

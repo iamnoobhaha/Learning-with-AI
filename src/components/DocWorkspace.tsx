@@ -5,6 +5,7 @@ import ChatPanel from "@/components/ChatPanel";
 import QuizPanel from "@/components/QuizPanel";
 import FlashcardsPanel from "@/components/FlashcardsPanel";
 import PaperPanel from "@/components/PaperPanel";
+import SectionSelector from "@/components/SectionSelector";
 import type { DocMeta } from "@/lib/types";
 
 type Tab = "learn" | "quiz" | "cards" | "paper";
@@ -22,6 +23,7 @@ export default function DocWorkspace({ doc }: { doc: DocMeta }) {
           { id: "cards", label: "Flashcards" },
         ];
   const [tab, setTab] = useState<Tab>("learn");
+  const [refreshKey, setRefreshKey] = useState(0);
 
   return (
     <div>
@@ -38,6 +40,14 @@ export default function DocWorkspace({ doc }: { doc: DocMeta }) {
           </button>
         ))}
       </div>
+
+      {doc.kind === "notes" && (
+        <SectionSelector
+          key={refreshKey}
+          documentId={doc.id}
+          onChange={() => setRefreshKey((k) => k + 1)}
+        />
+      )}
 
       {tab === "learn" && <ChatPanel documentId={doc.id} />}
       {tab === "quiz" && <QuizPanel documentId={doc.id} />}

@@ -5,10 +5,17 @@ import * as XLSX from "xlsx";
 import JSZip from "jszip";
 
 const MAX_TEXT = 400_000;
+const MAX_BLOCK_CHARS = 6000;
+
+export interface ContentBlock {
+  label: string;
+  text: string;
+}
 
 export interface ExtractResult {
   text: string;
   pages: number | null;
+  blocks: ContentBlock[];
 }
 
 export class UnsupportedFileTypeError extends Error {
@@ -25,17 +32,91 @@ function cap(text: string): string {
   return text.slice(0, MAX_TEXT);
 }
 
+function capBlocks(blocks: ContentBlock[]): ContentBlock[] {
+  const out: ContentBlock[] = [];
+  let total = 0;
+  for (const b of blocks) {
+    const room = MAX_TEXT - total;
+    if (room <= 0) break;
+    const text = b.text.slice(0, room);
+    if (!text.trim()) continue;
+    out.push({ label: b.label, text });
+    total += text.length;
+  }
+  return out;
+}
+
+function splitByHeadings(text: string, label: string): ContentBlock[] {
+  const lines = text.split("\n");
+  const blocks: ContentBlock[] = [];
+  let current: string[] = [];
+  let heading = label;
+  const flush = () => {
+    const body = current.join("\n").trim();
+    if (body) blocks.push({ label: heading, text: body });
+    current = [];
+  };
+  const isHeading = (line: string) => {
+    const t = line.trim();
+    if (!t || t.length > 80) return false;
+    if (/^#{1,6}\s+\S/.test(t)) return true;
+    if (/^(page|slide|sheet)\s+\d+\b/i.test(t)) return true;
+    if (/^(lecture|class|tutorial|session|chapter|topic|unit|week)\b[\s#:.-]*\d*\b/i.test(t)) return true;
+    if (/^[A-Z0-9][A-Z0-9 ,&'()\-]{3,60}$/.test(t) && /[A-Z]{3}/.test(t)) return true;
+    return false;
+  };
+  for (const line of lines) {
+    if (isHeading(line) && current.join("\n").trim()) {
+      flush();
+      heading = line.trim().replace(/^#+\s*/, "").slice(0, 80);
+    }
+    current.push(line);
+  }
+  flush();
+  if (!blocks.length && text.trim()) blocks.push({ label, text: text.trim() });
+  return blocks;
+}
+
+function packBlocks(blocks: ContentBlock[]): ContentBlock[] {
+  const out: ContentBlock[] = [];
+  for (const block of blocks) {
+    if (block.text.length <= MAX_BLOCK_CHARS) {
+      out.push(block);
+      continue;
+    }
+    const parts = Math.ceil(block.text.length / MAX_BLOCK_CHARS);
+    const size = Math.ceil(block.text.length / parts);
+    for (let i = 0; i < parts; i++) {
+      out.push({
+        label: parts > 1 ? `${block.label} (part ${i + 1}/${parts})` : block.label,
+        text: block.text.slice(i * size, (i + 1) * size),
+      });
+    }
+  }
+  return out;
+}
+
 export async function extractPdf(buf: Buffer): Promise<ExtractResult> {
   const out = await pdfParse(buf);
   const text = clean(out.text);
   if (!text) throw new Error("Could not extract any text. Is the PDF scanned images?");
-  return { text: cap(text), pages: out.numpages ?? null };
+  const pages: string[] = text.split("\f").map((p) => p.trim());
+  const numbered = pages.some((p) => p.length > 0);
+  const blocks = numbered
+    ? packBlocks(
+        pages
+          .map((p, i) => ({ label: `Page ${i + 1}`, text: p }))
+          .filter((b) => b.text.length > 0)
+      )
+    : splitByHeadings(text, "Document");
+  return { text: cap(text), pages: out.numpages ?? null, blocks: capBlocks(blocks) };
 }
 
 export function extractPlain(buf: Buffer): ExtractResult {
   const text = clean(buf.toString("utf8"));
   if (!text) throw new Error("The file appears to be empty.");
-  return { text: cap(text), pages: null };
+  const blocks = packBlocks(splitByHeadings(text, "Notes"));
+  return { text: cap(text), pages: null, blocks: capBlocks(blocks) };
 }
 
 const wordExtractor = new WordExtractor();
@@ -44,7 +125,8 @@ export async function extractDocx(buf: Buffer): Promise<ExtractResult> {
   const { value } = await mammoth.extractRawText({ buffer: buf });
   const text = clean(value);
   if (!text) throw new Error("No text found in the Word document (is it image-only?)");
-  return { text: cap(text), pages: null };
+  const blocks = packBlocks(splitByHeadings(text, "Document"));
+  return { text: cap(text), pages: null, blocks: capBlocks(blocks) };
 }
 
 export async function extractDoc(buf: Buffer): Promise<ExtractResult> {
@@ -58,7 +140,8 @@ export async function extractDoc(buf: Buffer): Promise<ExtractResult> {
   } catch {}
   const text = clean(parts.filter(Boolean).join("\n\n"));
   if (!text) throw new Error("No readable text found in the legacy .doc file");
-  return { text: cap(text), pages: null };
+  const blocks = packBlocks(splitByHeadings(text, "Document"));
+  return { text: cap(text), pages: null, blocks: capBlocks(blocks) };
 }
 
 function decodeXmlEntities(s: string): string {
@@ -84,33 +167,33 @@ export async function extractPptx(buf: Buffer): Promise<ExtractResult> {
     throw new Error("Not a valid PowerPoint file (no slides found)");
   }
 
-  let out = "";
+  const blocks: ContentBlock[] = [];
   for (let i = 0; i < slideNames.length; i++) {
     const xml = await zip.file(slideNames[i])!.async("string");
     const runs = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
       .map((m) => decodeXmlEntities(m[1]).trim())
       .filter(Boolean);
     if (!runs.length) continue;
-    out += `\n\n[Slide ${i + 1}]\n${runs.join("\n")}`;
+    blocks.push({ label: `Slide ${i + 1}`, text: runs.join("\n") });
   }
-  const text = clean(out);
+  const text = clean(blocks.map((b) => `[${b.label}]\n${b.text}`).join("\n\n"));
   if (!text) throw new Error("No text found in the presentation (is it image-only?)");
-  return { text: cap(text), pages: slideNames.length };
+  return { text: cap(text), pages: slideNames.length, blocks: capBlocks(blocks) };
 }
 
 export async function extractXlsx(buf: Buffer): Promise<ExtractResult> {
   const wb = XLSX.read(buf, { type: "buffer" });
-  let out = "";
+  const blocks: ContentBlock[] = [];
   for (const name of wb.SheetNames) {
     const sheet = wb.Sheets[name];
     if (!sheet) continue;
     const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
     if (!csv.trim()) continue;
-    out += `\n\n[Sheet: ${name}]\n${csv}`;
+    blocks.push({ label: `Sheet: ${name}`, text: csv });
   }
-  const text = clean(out);
+  const text = clean(blocks.map((b) => `[${b.label}]\n${b.text}`).join("\n\n"));
   if (!text) throw new Error("No data found in the workbook");
-  return { text: cap(text), pages: null };
+  return { text: cap(text), pages: null, blocks: capBlocks(blocks) };
 }
 
 export async function extractFile(
