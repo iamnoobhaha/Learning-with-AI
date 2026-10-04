@@ -254,7 +254,17 @@ export default function QuizPanel({
               {history.map((h) => (
                 <li key={h.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{h.title}</p>
+                    <p className="truncate font-medium">
+                      {h.title}
+                      {h.stale && (
+                        <span
+                          className="ml-2 rounded-full bg-amber-950 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-300"
+                          title="You changed your page selection after this quiz was generated"
+                        >
+                          Older page selection
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs text-zinc-500">
                       {h.questionCount} questions · {h.difficulty} ·{" "}
                       {h.createdAt.slice(0, 16).replace("T", " ")}

@@ -8,7 +8,7 @@ import DocumentCard from "@/components/DocumentCard";
 import ChatPanel from "@/components/ChatPanel";
 import QuizPanel from "@/components/QuizPanel";
 import FlashcardsPanel from "@/components/FlashcardsPanel";
-import SectionSelector from "@/components/SectionSelector";
+import PageSelector from "@/components/PageSelector";
 import type { DocMeta } from "@/lib/types";
 
 type Tab = "docs" | "content" | "tutor" | "quiz" | "cards";
@@ -85,8 +85,8 @@ export default function LibraryWorkspace({
       {tab === "content" && (
         <div className="space-y-4">
           <p className="text-sm text-zinc-500">
-            Choose which sections the AI is allowed to study. Excluded sections are skipped by the
-            tutor, quiz generator and flashcard generator for this whole course.
+            Choose which pages the AI may study. Excluded pages are skipped by the tutor, quiz
+            generator and flashcard generator for this whole course.
           </p>
           {docs.length ? (
             docs.map((d) => (
@@ -96,12 +96,15 @@ export default function LibraryWorkspace({
                     {d.title}
                   </Link>
                 </p>
-                <SectionSelector documentId={d.id} />
+                <PageSelector
+                  documentId={d.id}
+                  pageModel={d.page_model === "paginated" ? "paginated" : "sectioned"}
+                />
               </div>
             ))
           ) : (
             <p className="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-sm text-zinc-500">
-              Upload documents first to choose which sections to include.
+              Upload documents first to choose which pages to include.
             </p>
           )}
         </div>

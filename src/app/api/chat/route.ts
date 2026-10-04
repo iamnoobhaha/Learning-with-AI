@@ -1,5 +1,11 @@
 import db from "@/lib/db";
-import { docContext, libraryContext } from "@/lib/context";
+import {
+  buildContext,
+  documentScopeName,
+  libraryScopeName,
+  NoIncludedContentError,
+  summariseSources,
+} from "@/lib/ai-context";
 import { tutorMessages } from "@/lib/prompts";
 import { aiStream, type AiMessage } from "@/lib/ai";
 import type { ChatMsg } from "@/lib/types";
@@ -85,27 +91,33 @@ export async function POST(req: Request) {
       return new Response("Bad request", { status: 400 });
     }
 
+    // Query-aware retrieval through the single context service: it can only see
+    // pages the user has included, and it refuses when nothing is selected.
     let title: string;
     let context: string;
-    if (documentId) {
-      const doc = db
-        .prepare("SELECT id, title FROM documents WHERE id = ?")
-        .get(documentId) as { id: string; title: string } | undefined;
-      if (!doc) return new Response("Document not found", { status: 404 });
-      title = doc.title;
-      context = docContext(doc.id, message.trim());
-    } else {
-      const lib = db
-        .prepare("SELECT id, name FROM libraries WHERE id = ?")
-        .get(libraryId!) as { id: string; name: string } | undefined;
-      if (!lib) return new Response("Library not found", { status: 404 });
-      const nDocs = (
-        db.prepare("SELECT COUNT(*) AS n FROM documents WHERE library_id = ?").get(lib.id) as {
-          n: number;
-        }
-      ).n;
-      title = `${lib.name} — all ${Number(nDocs)} document(s)`;
-      context = libraryContext(lib.id, message.trim());
+    let citations: string;
+    try {
+      const built = buildContext({
+        documentId,
+        libraryId,
+        query: message.trim(),
+        maxChars: 22000,
+        coverage: false,
+        scopeName: documentId ? documentScopeName(documentId) : libraryScopeName(libraryId!),
+      });
+      title = documentId
+        ? documentScopeName(documentId).replace(/"/g, "")
+        : libraryScopeName(libraryId!).replace(/"/g, "");
+      context = built.text;
+      citations = summariseSources(built.sources);
+    } catch (err) {
+      if (err instanceof NoIncludedContentError) {
+        return new Response(err.message, { status: 400 });
+      }
+      if (err instanceof Error && /not found/i.test(err.message)) {
+        return new Response(err.message, { status: 404 });
+      }
+      return new Response("Could not read the selected pages", { status: 400 });
     }
 
     const trimmed = message.trim().slice(0, 4000);
@@ -140,6 +152,10 @@ export async function POST(req: Request) {
       message: trimmed,
     });
 
+    // Provenance for this answer, appended as a short footer so the student can
+    // see which included pages supported it.
+    const sourceFooter = citations ? `\n\n_Sources: ${citations}_` : "";
+
     let full = "";
     async function* capped(): AsyncGenerator<string> {
       try {
@@ -147,6 +163,7 @@ export async function POST(req: Request) {
           full += token;
           yield token;
         }
+        if (sourceFooter) yield sourceFooter;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "stream failed";
         yield `\n\n**[AI error] ${msg}**`;

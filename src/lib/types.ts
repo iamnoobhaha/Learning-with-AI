@@ -7,6 +7,9 @@ export interface DocMeta {
   size: number;
   library_id: string | null;
   created_at: string;
+  page_model?: "paginated" | "sectioned";
+  selection_revision?: number;
+  needs_reprocessing?: number;
 }
 
 export interface LibraryMeta {
@@ -106,6 +109,10 @@ export interface ExamListItem {
 export interface QuizHistoryItemV2 extends QuizHistoryItem {
   attemptCount: number;
   recentScores: number[];
+  /** True when the page selection changed after this quiz was generated. */
+  stale?: boolean;
+  selectionRevision?: number | null;
+  currentRevision?: number;
 }
 
 export interface StatsOverview {

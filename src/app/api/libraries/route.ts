@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import db from "@/lib/db";
 import { findOrCreateLibrary, listLibraries } from "@/lib/libraries";
 
 export const runtime = "nodejs";

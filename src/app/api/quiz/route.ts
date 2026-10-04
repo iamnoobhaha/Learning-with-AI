@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
-import { evenContext, evenLibraryContext, docIdsInLibrary, includedContentChars } from "@/lib/context";
 import { quizMessages } from "@/lib/prompts";
 import { aiComplete, extractJson } from "@/lib/ai";
 import { dedupeAgainst } from "@/lib/dedup";
+import {
+  buildContext,
+  documentScopeName,
+  libraryScopeName,
+  NoIncludedContentError,
+  summariseSources,
+} from "@/lib/ai-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +38,32 @@ function shuffleMcqOptions(options: string[], answerIndex: number) {
   };
 }
 
+/** Selection revision of a document, used to mark generated work stale later. */
+function currentRevision(documentId: string): number {
+  const row = db
+    .prepare("SELECT selection_revision FROM documents WHERE id = ?")
+    .get(documentId) as { selection_revision: number } | undefined;
+  return row?.selection_revision ?? 1;
+}
+
+/** For course scope, the newest revision among member documents. */
+function maxLibraryRevision(libraryId: string): number {
+  const row = db
+    .prepare(
+      "SELECT COALESCE(MAX(selection_revision), 1) AS m FROM documents WHERE library_id = ?"
+    )
+    .get(libraryId) as { m: number };
+  return Number(row.m) || 1;
+}
+
+function currentRevisionOfDocument(documentId: string): number {
+  return currentRevision(documentId);
+}
+
+function maxRevisionInLibrary(libraryId: string): number {
+  return maxLibraryRevision(libraryId);
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const documentId = url.searchParams.get("documentId");
@@ -41,9 +73,13 @@ export async function GET(req: Request) {
   }
   const where = documentId ? "q.document_id = ?" : "q.library_id = ?";
   const scopeVal = documentId ?? libraryId;
+  if (!scopeVal) {
+    return NextResponse.json({ error: "documentId or libraryId required" }, { status: 400 });
+  }
   const rows = db
     .prepare(
-      `SELECT q.id, q.title, q.difficulty, q.best, q.created_at, COUNT(qu.id) AS question_count
+      `SELECT q.id, q.title, q.difficulty, q.best, q.created_at, q.selection_revision,
+              COUNT(qu.id) AS question_count
        FROM quizzes q LEFT JOIN questions qu ON qu.quiz_id = q.id
        WHERE ${where} GROUP BY q.id ORDER BY q.created_at DESC, q.id DESC`
     )
@@ -53,8 +89,14 @@ export async function GET(req: Request) {
     difficulty: string;
     best: number | null;
     created_at: string;
+    selection_revision: number | null;
     question_count: number;
   }[];
+
+  // Current selection revision for the scope, so the client can flag stale work.
+  const currentRevision = documentId
+    ? currentRevisionOfDocument(documentId)
+    : maxRevisionInLibrary(scopeVal);
 
   const attemptRows = db
     .prepare(
@@ -84,6 +126,10 @@ export async function GET(req: Request) {
         questionCount: Number(r.question_count),
         attemptCount: att?.count ?? 0,
         recentScores: [...(att?.scores ?? [])].reverse(),
+        stale:
+          r.selection_revision !== null && r.selection_revision < currentRevision,
+        selectionRevision: r.selection_revision,
+        currentRevision,
       };
     }),
   });
@@ -91,14 +137,21 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as {
+    let body: {
       documentId?: string;
       libraryId?: string;
       count?: number;
       mcqRatio?: number;
       difficulty?: string;
       weak?: boolean;
+      pageFrom?: number;
+      pageTo?: number;
     };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
     if (!body.documentId && !body.libraryId) {
       return NextResponse.json(
         { error: "documentId or libraryId required" },
@@ -106,42 +159,38 @@ export async function POST(req: Request) {
       );
     }
 
-    let context: string;
-    let sourceTitle: string;
-    if (body.documentId) {
-      const doc = db
-        .prepare("SELECT id, title FROM documents WHERE id = ?")
-        .get(body.documentId) as { id: string; title: string } | undefined;
-      if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
-      sourceTitle = doc.title;
-      if (includedContentChars([doc.id]) < 200) {
-        return NextResponse.json(
-          { error: "All content in this document is excluded. Include at least one section first." },
-          { status: 400 }
-        );
+    // One authoritative context builder; it can only see included pages.
+    let built;
+    try {
+      built = buildContext({
+        documentId: body.documentId,
+        libraryId: body.libraryId,
+        maxChars: 30000,
+        coverage: true,
+        pageRange:
+          body.pageFrom || body.pageTo
+            ? { from: body.pageFrom, to: body.pageTo }
+            : undefined,
+        scopeName: body.documentId
+          ? documentScopeName(body.documentId)
+          : libraryScopeName(body.libraryId!),
+      });
+    } catch (err) {
+      if (err instanceof NoIncludedContentError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
       }
-      context = evenContext(doc.id, 30000);
-    } else {
-      const lib = db
-        .prepare("SELECT id, name FROM libraries WHERE id = ?")
-        .get(body.libraryId!) as { id: string; name: string } | undefined;
-      if (!lib) return NextResponse.json({ error: "Library not found" }, { status: 404 });
-      const docIds = docIdsInLibrary(lib.id);
-      if (!docIds.length) {
-        return NextResponse.json(
-          { error: "This library has no documents yet — upload some notes first." },
-          { status: 400 }
-        );
+      if (err instanceof Error && /not found/i.test(err.message)) {
+        return NextResponse.json({ error: err.message }, { status: 404 });
       }
-      sourceTitle = `${lib.name} (${docIds.length} documents)`;
-      if (includedContentChars(docIds) < 200) {
-        return NextResponse.json(
-          { error: "All content in this library is excluded. Include at least one section first." },
-          { status: 400 }
-        );
-      }
-      context = evenLibraryContext(lib.id, 34000);
+      return NextResponse.json({ error: "Could not read the selected pages" }, { status: 400 });
     }
+
+    const context = built.text;
+    const sourceTitle = body.documentId
+      ? documentScopeName(body.documentId).replace(/"/g, "")
+      : libraryScopeName(body.libraryId!).replace(/"/g, "");
+    // Provenance: which pages this quiz was actually built from.
+    const sourcePages = summariseSources(built.sources);
 
     const count = Math.min(Math.max(body.count ?? 8, 3), 20);
     const mcqRatio = Math.min(Math.max(body.mcqRatio ?? 0.7, 0), 1);
@@ -282,7 +331,7 @@ export async function POST(req: Request) {
     // drop anything the student has already been asked (exact or near-duplicate)
     const mcqDedup = dedupeAgainst(validMcqs, (q) => q.prompt, priorPrompts, 0.72);
     const shortDedup = dedupeAgainst(validShorts, (q) => q.prompt, priorPrompts, 0.72);
-    let candidates = [...mcqDedup.fresh, ...shortDedup.fresh];
+    const candidates = [...mcqDedup.fresh, ...shortDedup.fresh];
     const duplicatesRemoved = mcqDedup.duplicatesRemoved + shortDedup.duplicatesRemoved;
 
     // enforce the requested mcq/short split; cross-fill from the surplus type on shortfall
@@ -311,10 +360,10 @@ export async function POST(req: Request) {
 
     const quizId = randomUUID();
     const insertQuiz = db.prepare(
-      "INSERT INTO quizzes (id, document_id, library_id, title, difficulty) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO quizzes (id, document_id, library_id, title, difficulty, selection_revision) VALUES (?, ?, ?, ?, ?, ?)"
     );
     const insertQ = db.prepare(
-      "INSERT INTO questions (quiz_id, ord, type, prompt, options, answer, explanation) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO questions (quiz_id, ord, type, prompt, options, answer, explanation, source_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     );
     db.transaction(() => {
       insertQuiz.run(
@@ -324,7 +373,10 @@ export async function POST(req: Request) {
         body.weak
           ? `Weak-spot practice — ${sourceTitle}`
           : parsed.title?.slice(0, 200) || `${sourceTitle} quiz`,
-        difficulty
+        difficulty,
+        body.documentId
+          ? currentRevision(body.documentId)
+          : maxLibraryRevision(body.libraryId!)
       );
       ordered.forEach((q, i) => {
         const isMcq = q.type === "mcq";
@@ -335,7 +387,8 @@ export async function POST(req: Request) {
           q.prompt,
           JSON.stringify(isMcq ? q.options : []),
           isMcq ? String((q as { answerIndex: number }).answerIndex) : (q as { answer: string }).answer,
-          q.explanation
+          q.explanation,
+          sourcePages || null
         );
       });
     })();
@@ -346,6 +399,10 @@ export async function POST(req: Request) {
       mcqCount: pickedMcq.length,
       shortCount: pickedShort.length,
       duplicatesRemoved,
+      sourcePages: sourcePages || null,
+      pagesUsed: built.sources.length,
+      pagesIncluded: built.includedPages,
+      truncated: built.truncated,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";

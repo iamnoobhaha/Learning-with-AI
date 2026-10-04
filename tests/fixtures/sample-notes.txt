@@ -1,0 +1,7 @@
+Physics Lecture Notes
+
+# Photosynthesis
+Plants convert light energy into chemical energy stored as glucose. Chlorophyll absorbs photons in the chloroplasts.
+
+# Binary Search
+Binary search finds an element in a sorted array in O(log n) time by halving the search interval each step.

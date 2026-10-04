@@ -1,17 +1,19 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
-import { chunkBlocks, isLowValueBlock, stripJunkLines } from "@/lib/context";
 import { findOrCreateLibrary } from "@/lib/libraries";
-import { extractFile, UnsupportedFileTypeError } from "@/lib/extract";
+import { ingestDocument } from "@/lib/ingest";
+import { MAX_UPLOAD_BYTES, UploadValidationError, sanitizeFilename } from "@/lib/storage";
+import { DocumentExtractionError } from "@/lib/extract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 export async function GET() {
   const rows = db
     .prepare(
-      `SELECT id, kind, title, filename, size, pages, library_id, created_at
+      `SELECT id, kind, title, filename, size, pages, library_id, created_at,
+              page_model, selection_revision, needs_reprocessing
        FROM documents ORDER BY created_at DESC, id DESC`
     )
     .all();
@@ -19,15 +21,41 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  let storedFileId: string | null = null;
   try {
+    const contentLength = Number(req.headers.get("content-length") ?? "0");
+    if (contentLength > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        {
+          error: `That file is ${(contentLength / 1024 / 1024).toFixed(1)}MB, above the ${Math.round(
+            MAX_UPLOAD_BYTES / 1024 / 1024
+          )}MB limit.`,
+        },
+        { status: 413 }
+      );
+    }
+
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        {
+          error: `That file is ${(file.size / 1024 / 1024).toFixed(1)}MB, above the ${Math.round(
+            MAX_UPLOAD_BYTES / 1024 / 1024
+          )}MB limit.`,
+        },
+        { status: 413 }
+      );
+    }
+
     const kind = form.get("kind") === "past_paper" ? "past_paper" : "notes";
+    const originalName = sanitizeFilename(String(form.get("title") || "") || file.name);
     const title =
-      String(form.get("title") || "").trim() || file.name.replace(/\.[^.]+$/, "");
+      String(form.get("title") || "").trim() ||
+      sanitizeFilename(file.name).replace(/\.[^.]+$/, "");
 
     let libraryId: string | null = null;
     const rawLibraryId = String(form.get("libraryId") || "").trim();
@@ -42,86 +70,53 @@ export async function POST(req: Request) {
       libraryId = findOrCreateLibrary(libraryName).id;
     }
 
-    let text = "";
-    let pages: number | null = null;
-    let blocks: { label: string; text: string }[] = [];
-    try {
-      const buf = Buffer.from(await file.arrayBuffer());
-      const result = await extractFile(file.name, file.type, buf);
-      text = result.text;
-      pages = result.pages;
-      blocks = result.blocks;
-    } catch (err) {
-      if (err instanceof UnsupportedFileTypeError) {
-        return NextResponse.json({ error: err.message }, { status: 415 });
-      }
-      const message = err instanceof Error ? err.message : "Could not read the file";
-      return NextResponse.json(
-        { error: message.startsWith("No ") || message.includes("extract") ? message : `Could not read the file: ${message}` },
-        { status: 422 }
-      );
-    }
+    const buf = Buffer.from(await file.arrayBuffer());
+    void originalName;
 
-    if (!text) {
-      return NextResponse.json(
-        { error: "Could not extract any text from this file." },
-        { status: 422 }
-      );
-    }
-
-    const id = randomUUID();
-    db.prepare(
-      "INSERT INTO documents (id, kind, title, filename, size, pages, content, library_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, kind, title, file.name, file.size, pages, text, libraryId);
-
-    if (!blocks.length) blocks = [{ label: "Document", text }];
-
-    // drop admin-only sections entirely, and strip logistics lines from mixed ones
-    const MIN_BLOCK_CHARS = 120;
-    const keptBlocks: { label: string; text: string }[] = [];
-    const junkBlocks = new Set<number>();
-    blocks.forEach((b, i) => {
-      if (isLowValueBlock(b.text)) {
-        junkBlocks.add(i);
-        return;
-      }
-      const stripped = stripJunkLines(b.text);
-      if (stripped.trim().length < MIN_BLOCK_CHARS) {
-        junkBlocks.add(i);
-        return;
-      }
-      keptBlocks.push({ label: b.label, text: stripped });
-    });
-    if (!keptBlocks.length) {
-      return NextResponse.json(
-        {
-          error:
-            "No study content found in this file — it appears to contain only a title, schedule or admin details.",
-        },
-        { status: 422 }
-      );
-    }
-
-    const pieces = chunkBlocks(keptBlocks);
-    const ins = db.prepare(
-      "INSERT INTO chunks (document_id, idx, text, block_index, included) VALUES (?, ?, ?, ?, ?)"
-    );
-    db.transaction(() =>
-      pieces.forEach((p, i) => ins.run(id, i, p.text, p.blockIndex, 1))
-    )();
-
-    return NextResponse.json({
-      id,
+    const result = await ingestDocument(buf, {
+      kind,
+      title,
+      filename: file.name,
       libraryId,
-      blocks: keptBlocks.length,
-      autoExcluded: junkBlocks.size,
-      excludedLabels: [...junkBlocks]
-        .map((i) => blocks[i]?.label)
-        .filter(Boolean)
-        .slice(0, 8),
+      declaredMime: file.type,
     });
+    storedFileId = result.documentId;
+
+    return NextResponse.json(
+      {
+        id: result.documentId,
+        libraryId,
+        pages: result.pageCount,
+        pageModel: result.pageModel,
+        suggestedExclusions: result.suggestedExclusions,
+        noTextPages: result.noTextPages,
+        erroredPages: result.erroredPages,
+      },
+      { status: 201 }
+    );
   } catch (err) {
+    // Defence in depth: if ingestion created a row before failing, remove it so
+    // we never leave a half-uploaded document behind.
+    if (storedFileId) {
+      try {
+        db.prepare("DELETE FROM documents WHERE id = ?").run(storedFileId);
+      } catch {
+        // best effort
+      }
+    }
+
+    if (err instanceof UploadValidationError) {
+      // Covers UnsupportedFileTypeError, which extends it.
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    if (err instanceof DocumentExtractionError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
     const message = err instanceof Error ? err.message : "Upload failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    // Never leak stack traces or filesystem paths to the client.
+    return NextResponse.json(
+      { error: message.startsWith("No ") || message.includes("could not") ? message : `Upload failed: ${message}` },
+      { status: 500 }
+    );
   }
 }

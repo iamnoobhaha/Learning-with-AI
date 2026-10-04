@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
-import { evenContext, evenLibraryContext, docIdsInLibrary, includedContentChars } from "@/lib/context";
 import { flashcardMessages } from "@/lib/prompts";
 import { aiComplete, extractJson } from "@/lib/ai";
 import { dedupeAgainst } from "@/lib/dedup";
+import {
+  buildContext,
+  documentScopeName,
+  libraryScopeName,
+  NoIncludedContentError,
+  summariseSources,
+} from "@/lib/ai-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,11 +41,12 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as {
-      documentId?: string;
-      libraryId?: string;
-      count?: number;
-    };
+    let body: { documentId?: string; libraryId?: string; count?: number; pageFrom?: number; pageTo?: number };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
     if (!body.documentId && !body.libraryId) {
       return NextResponse.json(
         { error: "documentId or libraryId required" },
@@ -47,42 +54,33 @@ export async function POST(req: Request) {
       );
     }
 
-    let context: string;
-    let sourceTitle: string;
-    if (body.documentId) {
-      const doc = db
-        .prepare("SELECT id, title FROM documents WHERE id = ?")
-        .get(body.documentId) as { id: string; title: string } | undefined;
-      if (!doc) return NextResponse.json({ error: "Document not found" }, { status: 404 });
-      sourceTitle = doc.title;
-      if (includedContentChars([doc.id]) < 200) {
-        return NextResponse.json(
-          { error: "All content in this document is excluded. Include at least one section first." },
-          { status: 400 }
-        );
+    let built;
+    try {
+      built = buildContext({
+        documentId: body.documentId,
+        libraryId: body.libraryId,
+        maxChars: 24000,
+        coverage: true,
+        pageRange: body.pageFrom || body.pageTo ? { from: body.pageFrom, to: body.pageTo } : undefined,
+        scopeName: body.documentId
+          ? documentScopeName(body.documentId)
+          : libraryScopeName(body.libraryId!),
+      });
+    } catch (err) {
+      if (err instanceof NoIncludedContentError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
       }
-      context = evenContext(doc.id, 22000);
-    } else {
-      const lib = db
-        .prepare("SELECT id, name FROM libraries WHERE id = ?")
-        .get(body.libraryId!) as { id: string; name: string } | undefined;
-      if (!lib) return NextResponse.json({ error: "Library not found" }, { status: 404 });
-      const docIds = docIdsInLibrary(lib.id);
-      if (!docIds.length) {
-        return NextResponse.json(
-          { error: "This library has no documents yet — upload some notes first." },
-          { status: 400 }
-        );
+      if (err instanceof Error && /not found/i.test(err.message)) {
+        return NextResponse.json({ error: err.message }, { status: 404 });
       }
-      if (includedContentChars(docIds) < 200) {
-        return NextResponse.json(
-          { error: "All content in this library is excluded. Include at least one section first." },
-          { status: 400 }
-        );
-      }
-      sourceTitle = `${lib.name} (${docIds.length} documents)`;
-      context = evenLibraryContext(lib.id, 30000);
+      return NextResponse.json({ error: "Could not read the selected pages" }, { status: 400 });
     }
+
+    const context = built.text;
+    const sourceTitle = body.documentId
+      ? documentScopeName(body.documentId).replace(/"/g, "")
+      : libraryScopeName(body.libraryId!).replace(/"/g, "");
+    const sourcePages = summariseSources(built.sources);
 
     const count = Math.min(Math.max(body.count ?? 12, 3), 30);
 
@@ -127,13 +125,39 @@ export async function POST(req: Request) {
       );
     }
 
+    const revision = body.documentId
+      ? ((
+          db
+            .prepare("SELECT selection_revision FROM documents WHERE id = ?")
+            .get(body.documentId) as { selection_revision: number } | undefined
+        )?.selection_revision ?? 1)
+      : Number(
+          (
+            db
+              .prepare(
+                "SELECT COALESCE(MAX(selection_revision), 1) AS m FROM documents WHERE library_id = ?"
+              )
+              .get(body.libraryId) as { m: number }
+          ).m
+        ) || 1;
+
     const ins = db.prepare(
-      "INSERT INTO flashcards (document_id, library_id, front, back, deck_id, created_at, due_at) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))"
+      `INSERT INTO flashcards
+         (document_id, library_id, front, back, deck_id, created_at, due_at, selection_revision, source_pages)
+       VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, ?)`
     );
     const deckId = randomUUID();
     db.transaction(() =>
       kept.forEach((c) =>
-        ins.run(body.documentId ?? null, body.libraryId ?? null, c.front, c.back, deckId)
+        ins.run(
+          body.documentId ?? null,
+          body.libraryId ?? null,
+          c.front,
+          c.back,
+          deckId,
+          revision,
+          sourcePages || null
+        )
       )
     )();
 
@@ -148,6 +172,10 @@ export async function POST(req: Request) {
       total: Number(totalRow.n),
       deckId,
       duplicatesRemoved,
+      sourcePages: sourcePages || null,
+      pagesUsed: built.sources.length,
+      pagesIncluded: built.includedPages,
+      truncated: built.truncated,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";

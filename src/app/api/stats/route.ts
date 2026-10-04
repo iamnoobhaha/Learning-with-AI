@@ -19,7 +19,7 @@ function computeStreak(dates: Set<string>): number {
   if (!dates.size) return 0;
   const today = new Date();
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  let cursor = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  const cursor = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
   if (!dates.has(fmt(cursor))) {
     cursor.setUTCDate(cursor.getUTCDate() - 1);
     if (!dates.has(fmt(cursor))) return 0;

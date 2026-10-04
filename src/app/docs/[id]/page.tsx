@@ -9,11 +9,11 @@ export default async function DocPage({ params }: { params: Promise<{ id: string
   const { id } = await params;
   const doc = db
     .prepare(
-      "SELECT id, kind, title, filename, size, pages, library_id, created_at FROM documents WHERE id = ?"
+      `SELECT id, kind, title, filename, size, pages, library_id, created_at,
+              page_model, selection_revision, needs_reprocessing
+       FROM documents WHERE id = ?`
     )
-    .get(id) as
-    | (import("@/lib/types").DocMeta & { content?: undefined })
-    | undefined;
+    .get(id) as import("@/lib/types").DocMeta | undefined;
   if (!doc) notFound();
 
   const best = db

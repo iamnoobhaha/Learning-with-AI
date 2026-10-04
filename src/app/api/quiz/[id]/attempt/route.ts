@@ -47,7 +47,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
     const shorts = questions.filter((q) => q.type === "short");
     const toGrade = shorts.filter((q) => (answers.get(q.id) ?? "").trim());
-    let aiGrades = new Map<number, { score: number; feedback: string }>();
+    const aiGrades = new Map<number, { score: number; feedback: string }>();
     if (toGrade.length) {
       const raw = await aiComplete(
         gradeMessages(

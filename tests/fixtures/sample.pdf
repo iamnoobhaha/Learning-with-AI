@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R] /Count 4 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 11 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 186 >>
+stream
+BT /F1 12 Tf 72 720 Td (Operating Systems - Page 1) Tj ET
+BT /F1 12 Tf 72 704 Td (A process is a program in execution.) Tj ET
+BT /F1 12 Tf 72 688 Td (The PCB holds process state.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 11 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 370 >>
+stream
+BT /F1 12 Tf 72 720 Td (Operating Systems - Page 2) Tj ET
+BT /F1 12 Tf 72 704 Td (Scheduling policies decide CPU order.) Tj ET
+BT /F1 12 Tf 72 688 Td (Round robin uses a time quantum.) Tj ET
+BT /F1 12 Tf 72 672 Td (Monday 14:00 - 15:30 Room B204) Tj ET
+BT /F1 12 Tf 72 656 Td (Instructor: Dr Smith) Tj ET
+BT /F1 12 Tf 72 640 Td (Office hours: Tuesday 10:00-12:00) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 11 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 32 >>
+stream
+BT /F1 12 Tf 72 720 Td () Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 11 0 R >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 218 >>
+stream
+BT /F1 12 Tf 72 720 Td (Operating Systems - Page 4) Tj ET
+BT /F1 12 Tf 72 704 Td (Deadlock needs four conditions: mutual exclusion, hold and wait,) Tj ET
+BT /F1 12 Tf 72 688 Td (no preemption and circular wait.) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000133 00000 n 
+0000000260 00000 n 
+0000000496 00000 n 
+0000000623 00000 n 
+0000001043 00000 n 
+0000001170 00000 n 
+0000001251 00000 n 
+0000001379 00000 n 
+0000001648 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+1719
+%%EOF
