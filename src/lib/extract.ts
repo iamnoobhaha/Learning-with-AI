@@ -85,6 +85,23 @@ interface PdfDocument {
 }
 
 /**
+ * True when pdf.js failed because the *reader* password is missing or wrong.
+ *
+ * pdf.js signals this with `PasswordException`. Only a real user password
+ * produces that: a PDF carrying nothing but an owner password (permission
+ * restrictions such as "do not print", which viewers open without prompting) is
+ * decrypted transparently and never raises this. This is therefore the only
+ * reliable way to tell the two apart — sniffing the trailer for `/Encrypt`
+ * rejects perfectly readable documents.
+ */
+export function isPasswordError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const { name, message } = err as { name?: unknown; message?: unknown };
+  if (name === "PasswordException") return true;
+  return typeof message === "string" && /password/i.test(message);
+}
+
+/**
  * Extracts each PDF page individually so page numbers can never shift.
  *
  * Iterating the real page tree (instead of splitting aggregated text on form
@@ -105,13 +122,13 @@ export async function extractPdf(buf: Buffer): Promise<ExtractResult> {
     });
     doc = (await task.promise) as PdfDocument;
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    if (/password/i.test(detail)) {
+    if (isPasswordError(err)) {
       throw new DocumentExtractionError(
         "This PDF is password protected. Remove the password and upload it again.",
         422
       );
     }
+    const detail = err instanceof Error ? err.message : String(err);
     throw new DocumentExtractionError(
       `Could not read this PDF — it appears to be corrupt or not a real PDF (${detail}).`,
       422

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { extractPdf, extractPptx, extractPlain } from "@/lib/extract";
+import { extractPdf, extractPptx, extractPlain, isPasswordError } from "@/lib/extract";
 
 const FIX = path.join(process.cwd(), "tests", "fixtures");
 const pdf = () => fs.readFileSync(path.join(FIX, "sample.pdf"));
@@ -42,6 +42,23 @@ describe("PDF page mapping", () => {
   it("rejects a corrupt PDF with a helpful error instead of throwing raw internals", async () => {
     const broken = Buffer.from("%PDF-1.4\nthis is not really a pdf body");
     await expect(extractPdf(broken)).rejects.toThrow(/could not read this pdf/i);
+  });
+});
+
+describe("PDF failure classification", () => {
+  const passwordException = (message: string) =>
+    Object.assign(new Error(message), { name: "PasswordException" });
+
+  it("reports a missing or wrong reader password as a password error", () => {
+    expect(isPasswordError(passwordException("No password given"))).toBe(true);
+    expect(isPasswordError(new Error("Incorrect password"))).toBe(true);
+  });
+
+  it("does not misclassify other parse failures", () => {
+    expect(isPasswordError(new Error("Invalid PDF structure"))).toBe(false);
+    expect(isPasswordError(new Error("bad XRef entry"))).toBe(false);
+    expect(isPasswordError(null)).toBe(false);
+    expect(isPasswordError("boom")).toBe(false);
   });
 });
 

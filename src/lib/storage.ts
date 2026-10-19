@@ -168,13 +168,9 @@ export function assertSafeArchiveSize(buf: Buffer, limitRatio = 120): void {
   }
 }
 
-export function assertNotEncryptedPdf(buf: Buffer): void {
-  // /Encrypt in the trailer means content is password protected.
-  const tail = buf.subarray(Math.max(0, buf.length - 4096)).toString("latin1");
-  if (/\/Encrypt\b/.test(tail)) {
-    throw new UploadValidationError(
-      "This PDF is password protected. Remove the password and upload it again.",
-      422
-    );
-  }
-}
+// Note: there is deliberately no "/Encrypt" sniff for PDFs. An /Encrypt
+// dictionary is also present when a document has only an *owner* password
+// (permission restrictions such as "do not print"), which every viewer opens
+// without prompting — rejecting those uploads is a false positive. pdf.js is
+// the authority: it only raises PasswordException when a reader password is
+// actually required (see extract.ts).

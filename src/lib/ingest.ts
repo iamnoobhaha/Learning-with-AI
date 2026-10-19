@@ -5,7 +5,6 @@ import {
   storeOriginal,
   assertSupported,
   assertSafeArchiveSize,
-  assertNotEncryptedPdf,
   deleteOriginal,
 } from "./storage";
 import { detectLowValue } from "./quality";
@@ -52,7 +51,10 @@ export async function ingestDocument(
   ) {
     assertSafeArchiveSize(buf);
   }
-  if (ext.endsWith(".pdf")) assertNotEncryptedPdf(buf);
+  // Encrypted PDFs are not sniffed here on purpose: an /Encrypt dictionary also
+  // covers owner-password-only documents (permission restrictions) that open
+  // without any password. extractFile() lets pdf.js decide and reports a
+  // password prompt only when a reader password is genuinely required.
 
   const stored = storeOriginal(safeName, buf, mime);
 

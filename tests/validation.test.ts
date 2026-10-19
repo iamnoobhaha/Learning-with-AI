@@ -5,7 +5,6 @@ import {
   detectMime,
   assertSupported,
   assertSafeArchiveSize,
-  assertNotEncryptedPdf,
   UploadValidationError,
   MAX_UPLOAD_BYTES,
 } from "@/lib/storage";
@@ -92,13 +91,23 @@ describe("archive and encryption guards", () => {
     expect(() => assertSafeArchiveSize(buf, 120)).not.toThrow();
   });
 
-  it("detects encrypted PDFs", () => {
-    const enc = Buffer.from("%PDF-1.4\n1 0 obj\n<< /Filter /Standard >>\ntrailer << /Encrypt 9 0 R >>\n%%EOF");
-    expect(() => assertNotEncryptedPdf(enc)).toThrow(/password/i);
+  it("does not reject a PDF that merely declares an /Encrypt dictionary", () => {
+    // Owner-password-only documents (permission restrictions, e.g. "do not
+    // print") open in every viewer without a password. Sniffing the trailer
+    // for /Encrypt used to reject them; pdf.js is now the sole authority.
+    const restricted = Buffer.concat([
+      PDF_HEADER,
+      Buffer.from("9 0 obj\n<< /Filter /Standard /V 2 /R 3 >>\nendobj\ntrailer << /Encrypt 9 0 R >>\n%%EOF", "latin1"),
+    ]);
+    expect(() => assertSupported("statement.pdf", restricted)).not.toThrow();
   });
 
-  it("allows an unencrypted PDF", () => {
-    expect(() => assertNotEncryptedPdf(PDF_HEADER)).not.toThrow();
+  it("still accepts an ordinary PDF trailer", () => {
+    const plain = Buffer.concat([
+      PDF_HEADER,
+      Buffer.from("trailer << /Size 10 /Root 1 0 R >>\n%%EOF", "latin1"),
+    ]);
+    expect(() => assertSupported("plain.pdf", plain)).not.toThrow();
   });
 
   it("exposes a sane default upload limit", () => {

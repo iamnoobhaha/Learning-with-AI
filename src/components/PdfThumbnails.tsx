@@ -28,6 +28,18 @@ type PdfDoc = {
 
 let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 
+/**
+ * Mirrors the server rule in lib/extract.ts: pdf.js only reports a password
+ * problem when a reader password is actually required. Missing here means the
+ * document might merely be restricted (owner password) or unreadable.
+ */
+function isPasswordError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const { name, message } = err as { name?: unknown; message?: unknown };
+  if (name === "PasswordException") return true;
+  return typeof message === "string" && /password/i.test(message);
+}
+
 async function getPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
@@ -72,7 +84,7 @@ export function usePdfDocument(url: string | null) {
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error && /password/i.test(err.message)
+            isPasswordError(err)
               ? "This PDF is password protected, so page previews cannot be shown."
               : "Page previews are unavailable for this PDF."
           );
